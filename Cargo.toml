@@ -1,0 +1,8 @@
+[package]
+name = "memmet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ffmpeg-sidecar = "2.0.5"
+num2words = "1.2.0"
