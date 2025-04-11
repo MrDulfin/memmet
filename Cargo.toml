@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 ffmpeg-sidecar = "2.0.5"
+ffprobe = "0.4.0"
 num2words = "1.2.0"
