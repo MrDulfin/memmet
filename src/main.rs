@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if let Some((_, defaults)) = matches.subcommand() {
-        if let Some(no_audio) = defaults.get_one("no_audio") {
+        if let Some(no_audio) = defaults.get_one("no-audio") {
             config.no_audio = Some(*no_audio)
         }
         if let Some(overwrite) = defaults.get_one("overwrite") {
@@ -64,6 +64,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or_else(|| PathBuf::from("./output.mp4"))
     };
 
+
+    let no_audio = if let Some(n) = matches.get_one::<bool>("no-audio") {
+        *n
+    } else {
+        config.no_audio.unwrap_or_default()
+    };
+
     fn input(command: &mut FfmpegCommand, inputs: &mut Vec<InputFile>, path: PathBuf) {
         if path.is_dir() {
             for read_dir in path.read_dir().unwrap() {
@@ -100,14 +107,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             config.dimensions.as_ref().unwrap_or(&Dimensions::Largest)
         };
         match dimensions {
-            Dimensions::Largest => {
-                inputs.iter().by_ref().sorted_by(|a, b| {
-                    (a.width*a.height).cmp(&(b.width*b.height))
-                })
+            Dimensions::Largest => inputs
+                .iter()
+                .by_ref()
+                .sorted_by(|a, b| (a.width * a.height).cmp(&(b.width * b.height)))
                 .map(|i| (i.width, i.height))
                 .nth(0)
-                .unwrap()
-            }
+                .unwrap(),
             Dimensions::Smallest => {
                 // inputs.iter().by_ref().sorted_by(|a, b| {
                 //     (a.width*a.height).cmp(&(b.width*b.height))
@@ -117,13 +123,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 // .unwrap()
                 return Err("The \"smallest\" dimensions option is currently unsupported".into());
             }
-            Dimensions::Px { x, y } => {
-                (x.clone(),y.clone())
-            }
+            Dimensions::Px { x, y } => (x.clone(), y.clone()),
         }
     };
 
-    command.args("-f lavfi -i anullsrc=channel_layout=stereo".split(' '));
+    if !no_audio {
+        command.args("-f lavfi -i anullsrc=channel_layout=stereo".split(' '));
+    }
+
     let len = inputs.len();
     if len < 2 {
         return Err("you need at least 2 videos buh".into());
@@ -134,28 +141,33 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     for (i, input) in inputs.iter().enumerate() {
         let var = num2words::Num2Words::new(i as i32).to_words().unwrap();
-        let InputFile { audio, .. } = input;
+
         filter_string.push_str(format!("[{i}:v]scale={x}:{y}:force_original_aspect_ratio=decrease,setdar=ratio={x}/{y},setsar=sar=1/1,pad=ih*{x}/{y}/sar:ih:(ow-iw)/2:(oh-ih)/2[{var}];").as_str());
         concat_string.push_str(format!("[{var}]").as_str());
-        concat_string.push_str(
-            match audio {
-                Some(_) => format!("[{i}:a]"),
-                // to use the last audio track(our filler audio)
-                None => format!("[{len}]"),
-            }
-            .as_str(),
-        );
+        let InputFile { audio, .. } = input;
+        if !no_audio {
+            concat_string.push_str(
+                match audio {
+                    Some(_) => format!("[{i}:a]"),
+                    // to use the last audio track(our filler audio)
+                    None => format!("[{len}]"),
+                }
+                .as_str(),
+            );
+        }
     }
 
     filter_string = format!(
-        "{filter_string} {concat_string} concat=n={}:v=1:a=1[v][a]",
-        len
+        "{filter_string} {concat_string} concat=n={}:v=1{}[v]{}",
+        len,
+        if no_audio { "" } else { ":a=1" },
+        if no_audio { "" } else { "[a]" }
     );
 
     let mut buf = String::new();
     let mut command = command
         .filter_complex(filter_string)
-        .args(format!("-map [v] -map [a]").split(' '))
+        .args(format!("-map [v]{}", if no_audio { "" } else { " -map [a]" }).split(' '))
         .codec_video("libx265")
         .output(out_file.with_extension("mp4").to_str().unwrap())
         .overwrite()
@@ -180,7 +192,7 @@ struct InputFile {
     audio: Option<usize>,
     colour_space: String,
     width: i64,
-    height: i64
+    height: i64,
 }
 
 fn ffprobe_tracks(path: impl AsRef<std::path::Path> + Debug) -> Result<InputFile, FfProbeError> {
@@ -223,7 +235,7 @@ fn ffprobe_tracks(path: impl AsRef<std::path::Path> + Debug) -> Result<InputFile
 
 fn clap() -> ArgMatches {
     Command::new("memmet")
-        .version("1.0")
+        .version("1.0.0")
         .author("MrDulfin")
         .about("memmet: slap some videos together, but easy")
         .arg(
@@ -241,7 +253,7 @@ fn clap() -> ArgMatches {
                 .value_parser(clap::value_parser!(PathBuf))
                 .action(ArgAction::Append)
                 .value_name("FILE or DIR")
-                .help("The input files/directories to concatenate together"),
+                .help("The input files/directories to concatenate together")
         )
         .arg(
             Arg::new("dimensions")
@@ -252,18 +264,27 @@ fn clap() -> ArgMatches {
                 .help("Set the dimensions of the output video"),
         )
         .arg(
-            Arg::new("no_audio")
-                .long("no_audio")
+            Arg::new("no-audio")
+                .long("no-audio")
                 .short('n')
-                .value_parser(clap::value_parser!(bool))
-                .action(ArgAction::SetTrue)
+                .value_parser(value_parser!(bool))
+                .num_args(0..=1)
+                .require_equals(true)
+                .default_missing_value_os("true")
+                .default_missing_value("true")
+                .action(ArgAction::Set)
                 .help("Removes all audio from the output file"),
         )
         .arg(
             Arg::new("overwrite")
                 .long("overwrite")
                 .short('y')
-                .action(ArgAction::SetTrue)
+                .value_parser(value_parser!(bool))
+                .num_args(0..=1)
+                .require_equals(true)
+                .default_missing_value_os("true")
+                .default_missing_value("true")
+                .action(ArgAction::Set)
                 .help("Automatically overwrites the output file if it already exists"),
         )
         .arg(
@@ -285,8 +306,8 @@ fn clap() -> ArgMatches {
                         .help("Set the default output directory for your output file"),
                 )
                 .arg(
-                    Arg::new("no_audio")
-                        .long("no_audio")
+                    Arg::new("no-audio")
+                        .long("no-audio")
                         .short('n')
                         .value_parser(value_parser!(bool)),
                 )
