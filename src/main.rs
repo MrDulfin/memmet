@@ -1,4 +1,4 @@
-use std::{env::args, error::Error, fmt::Debug, io::Read, path::PathBuf};
+use std::{env::args, error::Error, fmt::Debug, fs::{self, OpenOptions}, io::Read, path::PathBuf};
 
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 use ffmpeg_sidecar::{
@@ -6,12 +6,43 @@ use ffmpeg_sidecar::{
     ffprobe::ffprobe_is_installed,
 };
 use ffprobe::{FfProbeError, ffprobe};
+use serde::{Deserialize, Serialize};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let matches = clap();
+    let mut config = Defaults::open()?;
 
     if !ffmpeg_is_installed() || !ffprobe_is_installed() {
         panic!("not installed")
+    }
+
+    if let Some((_, defaults)) = matches.subcommand() {
+        if let Some(no_audio) = defaults.get_one("no_audio") {
+            config.no_audio = Some(*no_audio)
+        }
+        if let Some(overwrite) = defaults.get_one("overwrite") {
+            config.overwrite = Some(*overwrite)
+        }
+        if let Some(dir) = defaults.get_one::<PathBuf>("output_directory") {
+            config.out_dir = Some(dir.clone())
+        }
+        if let Some(dir) = defaults.get_one::<Dimensions>("dimensions") {
+            config.dimensions = Some(dir.clone())
+        }
+
+        match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .truncate(true)
+        .open(&config.file)
+        {
+            Ok(file) => {
+                serde_json::to_writer(file, &config)?;
+                println!("Config successfully updated");
+            }
+            Err(e) => return Err(e.into())
+        }
+        return Ok(());
     }
 
     let in_dir = args()
@@ -117,7 +148,6 @@ struct InputFile {
 }
 
 fn check_for_tracks(path: impl AsRef<std::path::Path> + Debug) -> Result<InputFile, FfProbeError> {
-    // dbg!(&path);
     let info = ffprobe(&path)?;
     let mut input = InputFile::default();
 
@@ -152,6 +182,7 @@ fn check_for_tracks(path: impl AsRef<std::path::Path> + Debug) -> Result<InputFi
 fn clap() -> ArgMatches {
     Command::new("memmet")
         .version("1.0")
+        .author("MrDulfin")
         .about("memmet: slap some videos together, but easy")
         .arg(
             Arg::new("output")
@@ -205,8 +236,9 @@ fn clap() -> ArgMatches {
             Command::new("defaults")
                 .about("set the default input values")
                 .arg(
-                    Arg::new("output_dir")
-                        .long("output_dir")
+                    Arg::new("output_directory")
+                        .long("output_directory")
+                        .alias("out_dir")
                         .short('o')
                         .value_parser(value_parser!(PathBuf))
                         .action(ArgAction::Set)
@@ -224,7 +256,7 @@ fn clap() -> ArgMatches {
         .get_matches()
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 enum Dimensions {
     Px {
         x: usize,
@@ -243,6 +275,57 @@ fn parse_dimensions(dimensions: &str) -> Result<Dimensions, String> {
             let x = dimensions.nth(0).unwrap().parse::<usize>().unwrap();
             let y = dimensions.nth(0).unwrap().parse::<usize>().unwrap();
             Ok(Dimensions::Px { x, y })
+        }
+    }
+}
+
+#[derive(Default, Debug, Deserialize, Serialize)]
+struct Defaults {
+    out_dir: Option<PathBuf>,
+    dimensions: Option<Dimensions>,
+    no_audio: Option<bool>,
+    overwrite: Option<bool>,
+    #[serde(skip)]
+    file: PathBuf,
+}
+
+impl Defaults {
+    fn open() -> Result<Self, Box<dyn Error>> {
+        if let Some(dirs) = directories::ProjectDirs::from("moe", "mrdulfin", "memmet") {
+            let config_dir = dirs.config_dir();
+
+            fs::create_dir_all(config_dir)
+            .or_else(|err| {
+                if err.kind() == std::io::ErrorKind::AlreadyExists {
+                    Ok(())
+                } else {
+                    Err(err)
+                }
+            })?;
+
+            let path = config_dir.join("config");
+            if let Ok(file) = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(path.clone())
+            {
+                serde_json::from_reader(&file).or_else(|e| {
+                    if e.is_eof() {
+                        Ok(Defaults::default())
+                    } else {
+                        Err(e.into())
+                    }
+                }).map(|mut d| {
+                    d.file = path;
+                    d
+                })
+            } else {
+                Ok(Defaults::default())
+            }
+
+        } else {
+            todo!()
         }
     }
 }
