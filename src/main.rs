@@ -1,4 +1,4 @@
-use std::{env::args, error::Error, fmt::Debug, fs::{self, OpenOptions}, io::Read, path::PathBuf};
+use std::{error::Error, fmt::Debug, fs::{self, OpenOptions}, io::Read, path::PathBuf};
 
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 use ffmpeg_sidecar::{
@@ -45,49 +45,42 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let in_dir = args()
-        .nth(1)
-        .expect("Please provide an input directory :)")
-        .parse::<PathBuf>()?
-        .canonicalize()
-        .unwrap();
-    let out_file = args()
-        .nth(2)
-        .expect("PLEASE provide an out file >:(")
-        .parse::<PathBuf>()?;
+    let out_file = if let Some(path) = matches.get_one::<PathBuf>("output") {
+        path.to_path_buf()
+    } else {
+        config.out_dir.map(|dir| dir.join("./output.mp4")).unwrap_or_else(|| {
+            PathBuf::from("./output.mp4")
+        })
+    };
 
-    if !in_dir.is_dir() {
-        return Err(format!("not a dir: {}", in_dir.display()).into());
+    fn input(command: &mut FfmpegCommand, inputs: &mut Vec<InputFile>, path: PathBuf) {
+        if path.is_dir() {
+            for read_dir in path.read_dir().unwrap() {
+                if let Ok(dir) = read_dir {
+                    input(command, inputs, dir.path());
+                }
+            }
+        } else {
+            if path
+                .extension()
+                .is_some_and(|ext| ext.eq("mp4") || ext.eq("mkv") || ext.eq("mov"))
+            {
+                let input = check_for_tracks(&path).unwrap();
+                // We skip "reserved" colour space because I don't know how to handle it right now
+                if input.colour_space.as_str() != "reserved" {
+                    command.input(path.to_str().unwrap());
+                    inputs.push(input);
+                }
+            }
+        };
     }
 
     let mut command = FfmpegCommand::new();
-
-    let inputs = in_dir
-        .read_dir()
-        .unwrap()
-        .enumerate()
-        .filter_map(|(_, file)| {
-            if let Ok(file) = file {
-                let path = file.path();
-                if path
-                    .extension()
-                    .is_some_and(|ext| ext.eq("mp4") || ext.eq("mkv"))
-                {
-                    let input = check_for_tracks(&path).unwrap();
-                    if input.colour_space.as_str() != "reserved" {
-                        command.input(path.to_str().unwrap());
-                        Some(input)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
+    let paths= matches.get_many::<PathBuf>("input").unwrap();
+    let mut inputs = vec![];
+    for path in paths {
+        input(&mut command, &mut inputs, path.to_path_buf());
+    }
 
     command.args("-f lavfi -i anullsrc=channel_layout=stereo".split(' '));
     let len = inputs.len();
@@ -188,7 +181,6 @@ fn clap() -> ArgMatches {
             Arg::new("output")
                 .value_parser(clap::value_parser!(PathBuf))
                 .action(ArgAction::Set)
-                .default_value("output.mp4")
                 .value_name("FILE")
                 .help("The path for the output file")
                 .requires("input"),
