@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         if let Some(overwrite) = defaults.get_one("overwrite") {
             config.overwrite = Some(*overwrite)
         }
-        if let Some(dir) = defaults.get_one::<PathBuf>("output_directory") {
+        if let Some(dir) = defaults.get_one::<PathBuf>("output-directory") {
             config.out_dir = Some(dir.clone())
         }
         if let Some(dim) = defaults.get_one::<Dimensions>("dimensions") {
@@ -38,6 +38,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return Err("The \"smallest\" dimensions option is currently unsupported".into());
             }
             config.dimensions = Some(dim.clone())
+        }
+        if let Some(file_type) = defaults.get_one::<String>("file-type") {
+            config.file_type = match file_type.to_lowercase().as_str() {
+                "mp4" => Some(FileType::Mp4),
+                "mov" => Some(FileType::Mov),
+                "mkv" => Some(FileType::Mkv),
+                _ => unreachable!()
+            }
         }
 
         match OpenOptions::new()
@@ -48,22 +56,37 @@ fn main() -> Result<(), Box<dyn Error>> {
         {
             Ok(file) => {
                 serde_json::to_writer(file, &config)?;
-                println!("Config successfully updated");
+                println!("Config successfully updated:\n{config:?}");
             }
             Err(e) => return Err(e.into()),
         }
         return Ok(());
     }
 
-    let out_file = if let Some(path) = matches.get_one::<PathBuf>("output") {
-        path.to_path_buf()
-    } else {
-        config
-            .out_dir
-            .map(|dir| dir.join("./output.mp4"))
-            .unwrap_or_else(|| PathBuf::from("./output.mp4"))
-    };
+    let out_file =
 
+        if let Some(path) = matches.get_one::<PathBuf>("output") {
+            path.to_path_buf()
+        } else {
+            config
+                .out_dir
+                .map(|dir| dir.join(format!("output")))
+                .unwrap_or_else(|| PathBuf::from(format!("./output")))
+        };
+
+        let ext = if let Some(ext) = out_file.extension() {
+            if let Some("mp4" | "mov" | "mkv") = ext.to_str() {
+                ext.to_str().unwrap()
+            } else {
+                return Err("Invalid output file extension".into());
+            }
+        } else {
+            match config.file_type.unwrap_or_default() {
+                FileType::Mp4 => "mp4",
+                FileType::Mov => "mov",
+                FileType::Mkv => "mkv"
+            }
+        };
 
     let overwrite = if let Some(n) = matches.get_one::<bool>("overwrite") {
         *n
@@ -122,6 +145,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     for path in paths {
         input(&mut command, &mut inputs, path.to_path_buf());
     }
+
+
 
     let (x, y) = {
         let dimensions = if let Some(d) = matches.get_one::<Dimensions>("dimensions") {
@@ -192,7 +217,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .filter_complex(filter_string)
         .args(format!("-map [v]{}", if no_audio { "" } else { " -map [a]" }).split(' '))
         .codec_video("libx265")
-        .output(out_file.with_extension("mp4").to_str().unwrap())
+        .output(out_file.with_extension(ext).to_str().unwrap())
         .overwrite();
 
     let debug = matches.get_one("debug");
@@ -336,9 +361,9 @@ fn clap() -> ArgMatches {
             Command::new("config")
                 .about("set the default input values")
                 .arg(
-                    Arg::new("output_directory")
-                        .long("output_directory")
-                        .alias("out_dir")
+                    Arg::new("output-directory")
+                        .long("output-directory")
+                        .alias("out-dir")
                         .short('o')
                         .value_parser(value_parser!(PathBuf))
                         .action(ArgAction::Set)
@@ -361,7 +386,8 @@ fn clap() -> ArgMatches {
                         .long("dimensions")
                         .short('d')
                         .value_parser(parse_dimensions),
-                ),
+                )
+                .arg(Arg::new("file-type").long("file-type").short('f').value_parser(["mp4", "mov", "mkv"])),
         )
         .get_matches()
 }
@@ -379,8 +405,14 @@ fn parse_dimensions(dimensions: &str) -> Result<Dimensions, String> {
         "smallest" | "s" => Ok(Dimensions::Smallest),
         _ => {
             let mut dimensions = dimensions.split(':');
-            let x = dimensions.nth(0).unwrap().parse::<i64>().unwrap();
-            let y = dimensions.nth(0).unwrap().parse::<i64>().unwrap();
+            let x = match dimensions.nth(0) {
+                Some(x) => x.parse::<i64>().map_err(|e| e.to_string())?,
+                None => return Err("dimension formatted incorrectly".into()),
+            };
+            let y = match dimensions.nth(0) {
+                Some(y) => y.parse::<i64>().map_err(|e| e.to_string())?,
+                None => return Err("dimension formatted incorrectly".into()),
+            };
             Ok(Dimensions::Px { x, y })
         }
     }
@@ -392,8 +424,17 @@ struct Defaults {
     dimensions: Option<Dimensions>,
     no_audio: Option<bool>,
     overwrite: Option<bool>,
+    file_type: Option<FileType>,
     #[serde(skip)]
     file: PathBuf,
+}
+
+#[derive(Default, Debug, Deserialize, Serialize)]
+enum FileType {
+    #[default]
+    Mp4,
+    Mov,
+    Mkv
 }
 
 impl Defaults {
