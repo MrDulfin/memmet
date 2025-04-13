@@ -2,7 +2,7 @@ use std::{
     error::Error,
     fmt::Debug,
     fs::{self, OpenOptions},
-    io::{stdout, BufRead, Read, Write},
+    io::{BufRead, Read, Write, stdout},
     path::PathBuf,
 };
 
@@ -40,12 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             config.dimensions = Some(dim.clone())
         }
         if let Some(file_type) = defaults.get_one::<String>("file-type") {
-            config.file_type = match file_type.to_lowercase().as_str() {
-                "mp4" => Some(FileType::Mp4),
-                "mov" => Some(FileType::Mov),
-                "mkv" => Some(FileType::Mkv),
-                _ => unreachable!()
-            }
+            config.file_type = Some(FileType::from(file_type.to_lowercase().as_str()));
         }
 
         match OpenOptions::new()
@@ -63,30 +58,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let out_file =
+    let out_file = if let Some(path) = matches.get_one::<PathBuf>("output") {
+        path.to_path_buf()
+    } else {
+        config
+            .out_dir
+            .map(|dir| dir.join(format!("output")))
+            .unwrap_or_else(|| PathBuf::from(format!("./output")))
+    };
 
-        if let Some(path) = matches.get_one::<PathBuf>("output") {
-            path.to_path_buf()
+    let ext = if let Some(ext) = out_file.extension() {
+        if let Some("mp4" | "mov" | "mkv") = ext.to_str() {
+            ext.to_str().unwrap()
         } else {
-            config
-                .out_dir
-                .map(|dir| dir.join(format!("output")))
-                .unwrap_or_else(|| PathBuf::from(format!("./output")))
-        };
-
-        let ext = if let Some(ext) = out_file.extension() {
-            if let Some("mp4" | "mov" | "mkv") = ext.to_str() {
-                ext.to_str().unwrap()
-            } else {
-                return Err("Invalid output file extension".into());
-            }
-        } else {
-            match config.file_type.unwrap_or_default() {
-                FileType::Mp4 => "mp4",
-                FileType::Mov => "mov",
-                FileType::Mkv => "mkv"
-            }
-        };
+            return Err("Invalid output file extension".into());
+        }
+    } else {
+        config.file_type.unwrap_or_default().as_str()
+    };
 
     let overwrite = if let Some(n) = matches.get_one::<bool>("overwrite") {
         *n
@@ -96,7 +85,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if out_file.exists() && !overwrite {
         fn ow_warning(path: &PathBuf) -> bool {
-            print!("WARNING: The file {} already exists. Should we replace it? [y/N]: ", path.display());
+            print!(
+                "WARNING: The file {} already exists. Should we replace it? [y/N]: ",
+                path.display()
+            );
             stdout().flush().unwrap();
             let line = std::io::stdin().lock().lines().next().unwrap().unwrap();
 
@@ -145,8 +137,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     for path in paths {
         input(&mut command, &mut inputs, path.to_path_buf());
     }
-
-
 
     let (x, y) = {
         let dimensions = if let Some(d) = matches.get_one::<Dimensions>("dimensions") {
@@ -222,25 +212,25 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let debug = matches.get_one("debug");
     let mut command = if let Some(true) = debug {
-            command.print_command()
-        } else {
-            command
-        }
-        .spawn()
-        .unwrap();
+        command.print_command()
+    } else {
+        command
+    }
+    .spawn()
+    .unwrap();
 
     if let Some(true) = debug {
         command
-        .take_stdout()
-        .unwrap()
-        .read_to_string(&mut buf)
-        .unwrap();
+            .take_stdout()
+            .unwrap()
+            .read_to_string(&mut buf)
+            .unwrap();
 
         command
-        .take_stderr()
-        .unwrap()
-        .read_to_string(&mut buf)
-        .unwrap();
+            .take_stderr()
+            .unwrap()
+            .read_to_string(&mut buf)
+            .unwrap();
 
         command.wait().unwrap();
         println!("{buf}");
@@ -302,6 +292,7 @@ fn clap() -> ArgMatches {
         .version("1.0.0")
         .author("MrDulfin")
         .about("memmet: slap some videos together, but easy")
+        .arg_required_else_help(true)
         .arg(
             Arg::new("output")
                 .value_parser(clap::value_parser!(PathBuf))
@@ -317,7 +308,7 @@ fn clap() -> ArgMatches {
                 .value_parser(clap::value_parser!(PathBuf))
                 .action(ArgAction::Append)
                 .value_name("FILE or DIR")
-                .help("The input files/directories to concatenate together")
+                .help("The input files/directories to concatenate together"),
         )
         .arg(
             Arg::new("dimensions")
@@ -387,7 +378,12 @@ fn clap() -> ArgMatches {
                         .short('d')
                         .value_parser(parse_dimensions),
                 )
-                .arg(Arg::new("file-type").long("file-type").short('f').value_parser(["mp4", "mov", "mkv"])),
+                .arg(
+                    Arg::new("file-type")
+                        .long("file-type")
+                        .short('f')
+                        .value_parser(["mp4", "mov", "mkv"]),
+                ),
         )
         .get_matches()
 }
@@ -434,7 +430,28 @@ enum FileType {
     #[default]
     Mp4,
     Mov,
-    Mkv
+    Mkv,
+}
+
+impl FileType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            FileType::Mp4 => "mp4",
+            FileType::Mov => "mov",
+            FileType::Mkv => "mkv",
+        }
+    }
+}
+
+impl From<&str> for FileType {
+    fn from(value: &str) -> Self {
+        match value {
+            "mp4" => FileType::Mp4,
+            "mov" => FileType::Mov,
+            "mkv" => FileType::Mkv,
+            _ => unreachable!(),
+        }
+    }
 }
 
 impl Defaults {
