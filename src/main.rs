@@ -3,7 +3,7 @@ use std::{
     fmt::Debug,
     fs::{self, OpenOptions},
     io::{stdout, BufRead, Read, Write},
-    path::PathBuf, thread::sleep, time::Duration,
+    path::PathBuf,
 };
 
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
@@ -188,24 +188,40 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let mut buf = String::new();
-    let mut command = command
+    let command = command
         .filter_complex(filter_string)
         .args(format!("-map [v]{}", if no_audio { "" } else { " -map [a]" }).split(' '))
         .codec_video("libx265")
         .output(out_file.with_extension("mp4").to_str().unwrap())
-        .overwrite()
-        .print_command()
+        .overwrite();
+
+    let debug = matches.get_one("debug");
+    let mut command = if let Some(true) = debug {
+            command.print_command()
+        } else {
+            command
+        }
         .spawn()
         .unwrap();
 
-    command
+    if let Some(true) = debug {
+        command
+        .take_stdout()
+        .unwrap()
+        .read_to_string(&mut buf)
+        .unwrap();
+
+        command
         .take_stderr()
         .unwrap()
         .read_to_string(&mut buf)
         .unwrap();
 
-    command.wait().unwrap();
-    println!("{buf}");
+        command.wait().unwrap();
+        println!("{buf}");
+    } else {
+        command.wait().unwrap();
+    }
     Ok(())
 }
 
