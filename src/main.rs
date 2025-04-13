@@ -2,8 +2,8 @@ use std::{
     error::Error,
     fmt::Debug,
     fs::{self, OpenOptions},
-    io::Read,
-    path::PathBuf,
+    io::{stdout, BufRead, Read, Write},
+    path::PathBuf, thread::sleep, time::Duration,
 };
 
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
@@ -64,6 +64,29 @@ fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or_else(|| PathBuf::from("./output.mp4"))
     };
 
+
+    let overwrite = if let Some(n) = matches.get_one::<bool>("overwrite") {
+        *n
+    } else {
+        config.no_audio.unwrap_or_default()
+    };
+
+    if out_file.exists() && !overwrite {
+        fn ow_warning(path: &PathBuf) -> bool {
+            print!("WARNING: The file {} already exists. Should we replace it? [y/N]: ", path.display());
+            stdout().flush().unwrap();
+            let line = std::io::stdin().lock().lines().next().unwrap().unwrap();
+
+            match line.to_lowercase().as_str() {
+                "y" => true,
+                "n" | "" => false,
+                _ => ow_warning(path),
+            }
+        }
+        if !ow_warning(&out_file) {
+            return Ok(());
+        }
+    }
 
     let no_audio = if let Some(n) = matches.get_one::<bool>("no-audio") {
         *n
